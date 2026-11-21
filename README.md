@@ -1,1 +1,57 @@
-# MeteoStat
+# ClimaStat — Analyse météo historique
+
+Application web **sans backend et sans clé d'API** qui répond en langage clair à des questions du type :
+
+> « À cette période de l'année, en moyenne, le temps est… La température en journée / en nuit est…
+> Sur les 5 dernières années la tendance est… Les événements climatiques marquants sont… »
+
+## Fonctionnement
+
+1. **Recherche de lieu** via l'API de géocodage Open-Meteo (autocomplétion, monde entier).
+2. **Téléchargement de l'historique** météo journalier (températures max/min/moyenne, précipitations,
+   neige, code météo, vent) depuis l'[API historique Open-Meteo](https://open-meteo.com/en/docs/historical-weather-api)
+   (réanalyses ERA5 / ERA5-Land, de 1950 à nos jours).
+3. **Analyse et synthèse narrative** : moyennes et temps dominant autour de la date choisie (fenêtre de ±7 jours),
+   tendance sur 5 ans (régression linéaire), tendance climatique globale, records et événements marquants.
+4. **Graphiques** (Chart.js via CDN) :
+   - évolution année par année pour la période de l'année choisie (avec tendance) ;
+   - cycle annuel (températures et précipitations moyennes mensuelles) ;
+   - température moyenne annuelle + tendance.
+
+Les « événements marquants » incluent : records de chaleur / de froid absolus, jour le plus arrosé,
+vent le plus fort, chute de neige record, plus longue vague de chaleur (≥ 30 °C consécutifs),
+plus longue période de gel, année la plus chaude / la plus froide, ainsi que les records propres
+à la fenêtre de 15 jours autour de la date choisie.
+
+## Lancer l'application
+
+Aucune installation nécessaire : ouvrez simplement `index.html` dans un navigateur.
+
+En local (recommandé pour éviter tout blocage éventuel) :
+
+```bash
+python3 -m http.server 8080
+# puis http://localhost:8080
+```
+
+ou
+
+```bash
+npx serve .
+```
+
+## Fichiers
+
+| Fichier      | Rôle                                            |
+|--------------|-------------------------------------------------|
+| `index.html` | Page unique (structure et sections de résultat) |
+| `style.css`  | Mise en page (responsive, sans framework)       |
+| `app.js`     | Géocodage, requêtes API, analyses et graphiques |
+
+## Notes techniques
+
+- Les appels se font directement depuis le navigateur : les API Open-Meteo autorisent le CORS.
+- Les données d'archive ont environ 5 à 7 jours de délai de publication (réanalyse ERA5) ;
+  la date de fin est donc automatiquement ramenée à J−7.
+- Seuil « jour de pluie » : précipitations ≥ 1 mm/jour (constante `RAINY_MM` dans `app.js`).
+- Seuils heatwave / gel : 30 °C et 0 °C (constantes `HEAT_THRESHOLD_C` / `FROST_THRESHOLD_C`).

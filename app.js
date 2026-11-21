@@ -1,0 +1,595 @@
+/* ClimaStat — analyse météo historique basée sur l'API Open-Meteo (sans clé). */
+
+"use strict";
+
+const GEO_URL = "https://geocoding-api.open-meteo.com/v1/search";
+const ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
+
+const DAILY_VARS = [
+  "weather_code",
+  "temperature_2m_max",
+  "temperature_2m_min",
+  "temperature_2m_mean",
+  "precipitation_sum",
+  "snowfall_sum",
+  "wind_speed_10m_max",
+].join(",");
+
+const HALF_WINDOW_DAYS = 7;
+const HEAT_THRESHOLD_C = 30;
+const FROST_THRESHOLD_C = 0;
+const RAINY_MM = 1;
+
+const WMO = {
+  0:  { label: "Ciel clair",           icon: "☀️", cat: "Ensoleillé" },
+  1:  { label: "Plutôt dégagé",        icon: "🌤️", cat: "Plutôt dégagé" },
+  2:  { label: "Partiellement nuageux", icon: "⛅",  cat: "Plutôt dégagé" },
+  3:  { label: "Ciel couvert",         icon: "☁️", cat: "Nuageux" },
+  45: { label: "Brouillard",           icon: "🌫️", cat: "Brouillard" },
+  48: { label: "Brouillard givrant",   icon: "🌫️", cat: "Brouillard" },
+  51: { label: "Bruine légère",        icon: "🌦️", cat: "Bruine" },
+  53: { label: "Bruine",               icon: "🌦️", cat: "Bruine" },
+  55: { label: "Bruine dense",         icon: "🌦️", cat: "Bruine" },
+  56: { label: "Bruine verglaçante",   icon: "🌧️", cat: "Bruine" },
+  57: { label: "Bruine verglaçante dense", icon: "🌧️", cat: "Bruine" },
+  61: { label: "Pluie faible",         icon: "🌧️", cat: "Pluie" },
+  63: { label: "Pluie",                icon: "🌧️", cat: "Pluie" },
+  65: { label: "Pluie forte",          icon: "🌧️", cat: "Pluie" },
+  66: { label: "Pluie verglaçante",    icon: "🌧️", cat: "Pluie" },
+  67: { label: "Pluie verglaçante forte", icon: "🌧️", cat: "Pluie" },
+  71: { label: "Neige faible",         icon: "🌨️", cat: "Neige" },
+  73: { label: "Neige",                icon: "🌨️", cat: "Neige" },
+  75: { label: "Neige forte",          icon: "❄️", cat: "Neige" },
+  77: { label: "Grains de neige",      icon: "🌨️", cat: "Neige" },
+  80: { label: "Averses faibles",      icon: "🌦️", cat: "Averses" },
+  81: { label: "Averses",              icon: "🌧️", cat: "Averses" },
+  82: { label: "Averses violentes",    icon: "⛈️", cat: "Averses" },
+  85: { label: "Averses de neige",     icon: "🌨️", cat: "Neige" },
+  86: { label: "Fortes averses de neige", icon: "❄️", cat: "Neige" },
+  95: { label: "Orage",                icon: "⛈️", cat: "Orages" },
+  96: { label: "Orage avec grêle",     icon: "⛈️", cat: "Orages" },
+  99: { label: "Orage violent avec grêle", icon: "⛈️", cat: "Orages" },
+};
+
+const MONTH_NAMES = [
+  "janvier", "février", "mars", "avril", "mai", "juin",
+  "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+];
+
+let charts = [];
+
+/* ---------- Utilitaires ---------- */
+
+const fmt = (x, digits = 1) =>
+  x === null || x === undefined || Number.isNaN(x) ? "—" : x.toFixed(digits).replace(".", ",");
+
+function dayOfYear(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  return Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000) + 1;
+}
+
+function inWindow(doyVal, refDoy) {
+  let diff = Math.abs(doyVal - refDoy);
+  diff = Math.min(diff, 366 - diff);
+  return diff <= HALF_WINDOW_DAYS;
+}
+
+function frenchDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  return d.toLocaleDateString("fr-FR", {
+    day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
+  });
+}
+
+function slopePerYear(ys) {
+  const n = ys.length;
+  if (n < 2) return null;
+  const xm = (n - 1) / 2;
+  const ym = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - xm) * (ys[i] - ym);
+    den += (i - xm) * (i - xm);
+  }
+  return num / den;
+}
+
+function linregSeries(ys) {
+  const slope = slopePerYear(ys);
+  const n = ys.length;
+  const xm = (n - 1) / 2;
+  const ym = ys.reduce((a, b) => a + b, 0) / n;
+  const intercept = ym - slope * xm;
+  return ys.map((_, i) => intercept + slope * i);
+}
+
+function mean(arr) {
+  const v = arr.filter((x) => x !== null && !Number.isNaN(x));
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
+function trendWord(slope) {
+  if (slope === null) return "données insuffisantes";
+  if (slope >= 0.05) return "à la hausse";
+  if (slope <= -0.05) return "à la baisse";
+  return "globalement stable";
+}
+
+function longestRun(boolArr) {
+  let best = 0, cur = 0, bestEnd = -1;
+  boolArr.forEach((ok, i) => {
+    cur = ok ? cur + 1 : 0;
+    if (cur > best) { best = cur; bestEnd = i; }
+  });
+  return { length: best, endIndex: bestEnd };
+}
+
+function setStatus(msg, isError = false) {
+  const el = document.getElementById("status");
+  el.hidden = !msg;
+  el.textContent = msg || "";
+  el.classList.toggle("error", isError);
+}
+
+function destroyCharts() {
+  charts.forEach((c) => c && c.destroy());
+  charts = [];
+}
+
+/* ---------- Géocodage / autocomplétion ---------- */
+
+function placeLabel(p) {
+  return [p.name, p.admin1, p.country].filter(Boolean).join(", ");
+}
+
+async function geocode(q) {
+  const url = `${GEO_URL}?${new URLSearchParams({
+    name: q, count: "8", language: "fr", format: "json",
+  })}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Recherche de lieu indisponible");
+  const data = await res.json();
+  return data.results || [];
+}
+
+let debounceTimer = null;
+const searchInput = document.getElementById("search");
+const suggestionsEl = document.getElementById("suggestions");
+
+function renderSuggestions(results) {
+  suggestionsEl.innerHTML = "";
+  if (!results.length) {
+    suggestionsEl.hidden = true;
+    return;
+  }
+  results.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.textContent = p.name + " ";
+    const span = document.createElement("span");
+    span.textContent = [p.admin1, p.country].filter(Boolean).join(", ");
+    li.appendChild(span);
+    li.addEventListener("click", () => selectPlace(p));
+    if (i === 0) li.classList.add("active");
+    suggestionsEl.appendChild(li);
+  });
+  suggestionsEl.hidden = false;
+}
+
+function selectPlace(p) {
+  searchInput.value = placeLabel(p);
+  searchInput.dataset.lat = p.latitude;
+  searchInput.dataset.lon = p.longitude;
+  suggestionsEl.hidden = true;
+}
+
+searchInput.addEventListener("input", () => {
+  delete searchInput.dataset.lat;
+  clearTimeout(debounceTimer);
+  const q = searchInput.value.trim();
+  if (q.length < 2) { suggestionsEl.hidden = true; return; }
+  debounceTimer = setTimeout(async () => {
+    try { renderSuggestions(await geocode(q)); } catch { suggestionsEl.hidden = true; }
+  }, 300);
+});
+
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const first = suggestionsEl.querySelector("li");
+    if (first && !searchInput.dataset.lat) first.click();
+    else if (!searchInput.dataset.lat) analyze();
+  }
+});
+
+document.addEventListener("click", (e) => {
+  if (!suggestionsEl.contains(e.target) && e.target !== searchInput) {
+    suggestionsEl.hidden = true;
+  }
+});
+
+/* ---------- Récupération des données ---------- */
+
+async function loadArchive(place, sinceYear) {
+  const today = new Date();
+  const end = new Date(today);
+  end.setDate(end.getDate() - 7); /* l'archive ERA5 a ~5 jours de délai */
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const params = new URLSearchParams({
+    latitude: place.latitude,
+    longitude: place.longitude,
+    start_date: `${sinceYear}-01-01`,
+    end_date: iso(end),
+    daily: DAILY_VARS,
+    timezone: "auto",
+  });
+  const res = await fetch(`${ARCHIVE_URL}?${params}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.reason || "Erreur de l'API météo");
+  return data.daily;
+}
+
+/* ---------- Analyses ---------- */
+
+function periodAnalysis(d, refDateStr) {
+  const refDoy = dayOfYear(refDateStr);
+  const n = d.time.length;
+  const idx = [];
+  for (let i = 0; i < n; i++) if (inWindow(dayOfYear(d.time[i]), refDoy)) idx.push(i);
+
+  const perYear = new Map();
+  idx.forEach((i) => {
+    const year = +d.time[i].slice(0, 4);
+    if (!perYear.has(year)) {
+      perYear.set(year, { tmax: [], tmin: [], rain: [], codes: {} });
+    }
+    const y = perYear.get(year);
+    y.tmax.push(d.temperature_2m_max[i]);
+    y.tmin.push(d.temperature_2m_min[i]);
+    y.rain.push(d.precipitation_sum[i]);
+    const code = d.weather_code[i];
+    y.codes[code] = (y.codes[code] || 0) + 1;
+  });
+
+  const years = [...perYear.keys()].sort((a, b) => a - b);
+  const yearlyStats = years.map((year) => {
+    const y = perYear.get(year);
+    const tmax = mean(y.tmax);
+    const tmin = mean(y.tmin);
+    return { year, tmax, tmin, mean: tmax !== null && tmin !== null ? (tmax + tmin) / 2 : null };
+  });
+
+  const tmax = mean(idx.map((i) => d.temperature_2m_max[i]));
+  const tmin = mean(idx.map((i) => d.temperature_2m_min[i]));
+  const rainDays = idx.filter((i) => (d.precipitation_sum[i] || 0) >= RAINY_MM).length;
+  const totalPrecip = mean(idx.map((i) => d.precipitation_sum[i] || 0));
+
+  const catCount = {};
+  idx.forEach((i) => {
+    let cat;
+    if ((d.snowfall_sum[i] || 0) > 0) cat = "Neige";
+    else {
+      const w = WMO[d.weather_code[i]];
+      cat = w ? w.cat : "Autre";
+    }
+    catCount[cat] = (catCount[cat] || 0) + 1;
+  });
+  const catPct = Object.entries(catCount)
+    .map(([cat, count]) => ({ cat, pct: (100 * count) / idx.length }))
+    .sort((a, b) => b.pct - a.pct);
+
+  const hottest = idx.reduce((best, i) =>
+    d.temperature_2m_max[i] > (d.temperature_2m_max[best] ?? -Infinity) ? i : best, idx[0]);
+  const coldest = idx.reduce((best, i) =>
+    d.temperature_2m_min[i] < (d.temperature_2m_min[best] ?? Infinity) ? i : best, idx[0]);
+
+  return { count: idx.length, tmax, tmin, rainDays, totalPrecip, catPct, yearlyStats, hottest, coldest };
+}
+
+function annualAnalysis(d) {
+  const perYear = new Map();
+  d.time.forEach((t, i) => {
+    const year = +t.slice(0, 4);
+    if (!perYear.has(year)) perYear.set(year, []);
+    perYear.get(year).push(d.temperature_2m_mean[i]);
+  });
+  return [...perYear.keys()].sort((a, b) => a - b).map((year) => ({
+    year,
+    mean: mean(perYear.get(year)),
+  }));
+}
+
+function monthlyAnalysis(d) {
+  const perMonth = Array.from({ length: 12 }, () => ({ tmax: [], tmin: [], rain: [] }));
+  d.time.forEach((t, i) => {
+    const m = +t.slice(5, 7) - 1;
+    perMonth[m].tmax.push(d.temperature_2m_max[i]);
+    perMonth[m].tmin.push(d.temperature_2m_min[i]);
+    perMonth[m].rain.push(d.precipitation_sum[i] || 0);
+  });
+  return perMonth.map((m) => ({
+    tmax: mean(m.tmax), tmin: mean(m.tmin), rain: mean(m.rain),
+  }));
+}
+
+function notableEvents(d) {
+  let hottest = { i: null, v: -Infinity };
+  let coldest = { i: null, v: Infinity };
+  let wettest = { i: null, v: -Infinity };
+  let windiest = { i: null, v: -Infinity };
+  let snowiest = { i: null, v: -Infinity };
+  d.time.forEach((t, i) => {
+    const tx = d.temperature_2m_max[i];
+    const tn = d.temperature_2m_min[i];
+    const pr = d.precipitation_sum[i];
+    const wi = d.wind_speed_10m_max[i];
+    const sn = d.snowfall_sum[i];
+    if (tx !== null && tx > hottest.v) hottest = { i, v: tx };
+    if (tn !== null && tn < coldest.v) coldest = { i, v: tn };
+    if (pr !== null && pr > wettest.v) wettest = { i, v: pr };
+    if (wi !== null && wi > windiest.v) windiest = { i, v: wi };
+    if (sn !== null && sn > snowiest.v) snowiest = { i, v: sn };
+  });
+
+  const heat = longestRun(d.temperature_2m_max.map((v) => v !== null && v >= HEAT_THRESHOLD_C));
+  const freeze = longestRun(d.temperature_2m_min.map((v) => v !== null && v <= FROST_THRESHOLD_C));
+
+  const heatStartIdx = heat.length > 1 && heat.endIndex >= 0 ? heat.endIndex - heat.length + 1 : null;
+
+  return {
+    hottest,
+    coldest,
+    wettest,
+    windiest,
+    snowiest: snowiest.v > 0 ? snowiest : null,
+    heatwave: heatStartIdx !== null
+      ? { days: heat.length, from: d.time[heatStartIdx], to: d.time[heat.endIndex] }
+      : null,
+    coldSnap: freeze.length > 2
+      ? { days: freeze.length, to: d.time[freeze.endIndex] }
+      : null,
+  };
+}
+
+function annualRecords(annual) {
+  if (!annual.length) return null;
+  const sorted = [...annual].filter((a) => a.mean !== null).sort((a, b) => b.mean - a.mean);
+  if (!sorted.length) return null;
+  return { warmest: sorted[0], coldest: sorted[sorted.length - 1] };
+}
+
+/* ---------- Rendu ---------- */
+
+function renderNarrative(d, place, refDate, period, annual, sinceYear) {
+  const yearSpan = `${sinceYear}–${annual[annual.length - 1]?.year ?? ""}`;
+  const items = [];
+
+  const dominant = period.catPct[0];
+  const others = period.catPct.filter((c) => c.cat !== dominant.cat && c.pct >= 5);
+  const othersTxt = others.map((c) => `${c.cat.toLowerCase()} (${fmt(c.pct, 0)} %)`).join(", ");
+  items.push(
+    `À cette période de l'année, le temps est <strong>généralement ${dominant.cat.toLowerCase()}</strong>` +
+    (othersTxt ? `, avec aussi : ${othersTxt}` : "") + `.`);
+
+  items.push(
+    `Températures moyennes : <strong>${fmt(period.tmax)} °C la journée</strong> ` +
+    `(maximale) et <strong>${fmt(period.tmin)} °C la nuit</strong> (minimale).`);
+
+  items.push(
+    `Il pleut (${RAINY_MM} mm ou plus par jour) environ <strong>` +
+    `${fmt((100 * period.rainDays) / Math.max(period.count, 1), 0)} % des jours</strong>` +
+    ` de cette fenêtre de 15 jours, pour ${fmt(period.totalPrecip)} mm/jour en moyenne.`);
+
+  const last5 = period.yearlyStats.slice(-5).map((s) => s.mean).filter((v) => v !== null);
+  const slopeLast5 = slopePerYear(last5);
+  items.push(
+    `Sur les <strong>5 dernières années</strong>, la tendance pour cette période est ` +
+    `<strong>${trendWord(slopeLast5)}</strong>` +
+    (slopeLast5 !== null
+      ? ` (${slopeLast5 >= 0 ? "+" : ""}${fmt(slopeLast5, 2)} °C/an de variation des températures moyennes)`
+      : "") + `.`);
+
+  const allMeans = annual.map((a) => a.mean).filter((v) => v !== null);
+  const slopeAll = slopePerYear(allMeans);
+  if (slopeAll !== null) {
+    const n5 = Math.min(5, allMeans.length);
+    const last = allMeans.slice(-n5);
+    const prev = allMeans.slice(Math.max(0, allMeans.length - 2 * n5), allMeans.length - n5);
+    const delta = prev.length ? mean(last) - mean(prev) : null;
+    items.push(
+      `Climat global ${place.name} : réchauffement moyen de ` +
+      `<strong>${slopeAll >= 0 ? "+" : ""}${fmt(slopeAll, 2)} °C/an</strong> sur ${yearSpan}` +
+      (delta !== null
+        ? ` ; les ${n5} dernières années sont <strong>${delta >= 0 ? "+" : ""}${fmt(delta)} °C</strong> ` +
+          `par rapport à la période précédente`
+        : "") + `.`);
+  }
+
+  items.push(
+    `Records pour cette fenêtre de 15 jours : <strong class="warm">${fmt(d.temperature_2m_max[period.hottest])} °C</strong> ` +
+    `le ${frenchDate(d.time[period.hottest])} (record de chaleur), ` +
+    `<strong class="cold">${fmt(d.temperature_2m_min[period.coldest])} °C</strong> ` +
+    `le ${frenchDate(d.time[period.coldest])} (record de froid).`);
+
+  const el = document.getElementById("narrative");
+  el.innerHTML = `<h3>📌 En résumé</h3><ul>${items.map((t) => `<li>${t}</li>`).join("")}</ul>`;
+}
+
+function renderCards(place, refDate, period) {
+  const dominant = period.catPct[0];
+  const w = Object.values(WMO).find((x) => x.cat === dominant.cat);
+  const cards = [
+    { icon: w ? w.icon : "🗓️", label: "Temps dominant à cette période", value: dominant.cat, sub: `fenêtre ±${HALF_WINDOW_DAYS} jours autour du ${frenchDate(refDate)}` },
+    { icon: "🌞", label: "Température moyenne journée", value: `${fmt(period.tmax)} °C`, sub: "maximale quotidienne" },
+    { icon: "🌙", label: "Température moyenne nuit", value: `${fmt(period.tmin)} °C`, sub: "minimale quotidienne" },
+    { icon: "🌧️", label: "Jours de pluie", value: `${fmt((100 * period.rainDays) / Math.max(period.count, 1), 0)} %`, sub: `≥ ${RAINY_MM} mm/jour sur la fenêtre` },
+  ];
+  document.getElementById("cards").innerHTML = cards
+    .map((c) => `<div class="stat-card"><div class="icon">${c.icon}</div><div class="label">${c.label}</div><div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`)
+    .join("");
+}
+
+function renderPeriodChart(period) {
+  const ys = period.yearlyStats;
+  const years = ys.map((s) => s.year);
+  const tmax = ys.map((s) => s.tmax);
+  const tmin = ys.map((s) => s.tmin);
+  const n5 = Math.min(5, ys.length);
+  const trendAll = linregSeries(tmax.map((v, i) => (v + tmin[i]) / 2));
+
+  charts.push(new Chart(document.getElementById("chart-period"), {
+    type: "line",
+    data: {
+      labels: years,
+      datasets: [
+        { label: "Max moy. (journée) °C", data: tmax, borderColor: "#d9534f", backgroundColor: "#d9534f22", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
+        { label: "Min moy. (nuit) °C", data: tmin, borderColor: "#3a7bd5", backgroundColor: "#3a7bd522", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
+        { label: "Tendance globale (moyenne)", data: trendAll, borderColor: "#5b6b7b", borderDash: [6, 4], pointRadius: 0, tension: 0 },
+        { label: "5 dernières années", data: years.map((y, i) => (i >= years.length - n5 ? tmax[i] : null)), borderColor: "#e8a13a", backgroundColor: "#e8a13a", pointRadius: 4, showLine: false },
+      ],
+    },
+    options: {
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        y: { title: { display: true, text: "°C" } },
+        x: { ticks: { maxTicksLimit: 12 } },
+      },
+    },
+  }));
+}
+
+function renderMonthlyChart(monthly) {
+  charts.push(new Chart(document.getElementById("chart-monthly"), {
+    type: "bar",
+    data: {
+      labels: MONTH_NAMES.map((m) => m[0].toUpperCase() + m.slice(1, 3)),
+      datasets: [
+        { type: "line", label: "Max moy. (journée) °C", data: monthly.map((m) => m.tmax), borderColor: "#d9534f", tension: .3, pointRadius: 3 },
+        { type: "line", label: "Min moy. (nuit) °C", data: monthly.map((m) => m.tmin), borderColor: "#3a7bd5", tension: .3, pointRadius: 3 },
+        { type: "bar", label: "Précipitations moy. (mm/jour)", data: monthly.map((m) => m.rain), backgroundColor: "#1c9fd655", yAxisID: "y-rain" },
+      ],
+    },
+    options: {
+      scales: {
+        y: { title: { display: true, text: "°C" } },
+        "y-rain": { position: "right", title: { display: true, text: "mm/jour" }, grid: { drawOnChartArea: false } },
+      },
+    },
+  }));
+}
+
+function renderAnnualChart(annual) {
+  const means = annual.map((a) => a.mean);
+  charts.push(new Chart(document.getElementById("chart-annual"), {
+    type: "line",
+    data: {
+      labels: annual.map((a) => a.year),
+      datasets: [
+        { label: "Température moyenne annuelle °C", data: means, borderColor: "#0b6ecc", backgroundColor: "#0b6ecc22", tension: .3, pointRadius: annual.length > 60 ? 0 : 2, fill: true },
+        { label: "Tendance (régression)", data: linregSeries(means), borderColor: "#e8a13a", borderDash: [6, 4], pointRadius: 0, tension: 0 },
+      ],
+    },
+    options: {
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        y: { title: { display: true, text: "°C" } },
+        x: { ticks: { maxTicksLimit: 12 } },
+      },
+    },
+  }));
+}
+
+function renderEvents(d, events, annualRecordsData) {
+  const rows = [];
+  const add = (icon, html) => rows.push(`<li>${icon} ${html}</li>`);
+
+  add("🔥", `Record de chaleur absolu : <strong>${fmt(events.hottest.v)} °C</strong> le ${frenchDate(d.time[events.hottest.i])}.`);
+  add("🧊", `Record de froid absolu : <strong>${fmt(events.coldest.v)} °C</strong> le ${frenchDate(d.time[events.coldest.i])}.`);
+  add("🌊", `Jour le plus arrosé : <strong>${fmt(events.wettest.v)} mm</strong> de précipitations le ${frenchDate(d.time[events.wettest.i])}.`);
+  add("💨", `Vent le plus fort : <strong>${fmt(events.windiest.v)} km/h</strong> le ${frenchDate(d.time[events.windiest.i])}.`);
+  if (events.snowiest) {
+    add("❄️", `Chute de neige la plus forte : <strong>${fmt(events.snowiest.v)} cm</strong> le ${frenchDate(d.time[events.snowiest.i])}.`);
+  }
+  if (events.heatwave) {
+    add("🥵", `Vague de chaleur la plus longue : <strong>${events.heatwave.days} jours consécutifs</strong> ≥ ${HEAT_THRESHOLD_C} °C, du ${frenchDate(events.heatwave.from)} au ${frenchDate(events.heatwave.to)}.`);
+  }
+  if (events.coldSnap) {
+    add("🥶", `Froid le plus persistant : <strong>${events.coldSnap.days} jours consécutifs</strong> ≤ 0 °C jusqu'au ${frenchDate(events.coldSnap.to)}.`);
+  }
+  if (annualRecordsData) {
+    add("📈", `Année la plus chaude : <strong>${annualRecordsData.warmest.year}</strong> (${fmt(annualRecordsData.warmest.mean)} °C de moyenne) ; année la plus froide : <strong>${annualRecordsData.coldest.year}</strong> (${fmt(annualRecordsData.coldest.mean)} °C).`);
+  }
+
+  document.getElementById("events").innerHTML = `<ul>${rows.join("")}</ul>`;
+}
+
+/* ---------- Orchestration ---------- */
+
+async function analyze() {
+  const lat = parseFloat(searchInput.dataset.lat);
+  const lon = parseFloat(searchInput.dataset.lon);
+  if (!searchInput.dataset.lat || Number.isNaN(lat)) {
+    setStatus("Choisissez d'abord un lieu dans la liste de suggestions.", true);
+    return;
+  }
+
+  const refDate = document.getElementById("ref-date").value;
+  if (!refDate) {
+    setStatus("Choisissez une date de référence.", true);
+    return;
+  }
+
+  const sinceYear = document.getElementById("since").value;
+  const label = searchInput.value.trim();
+  const place = { name: label.split(",")[0], latitude: lat, longitude: lon };
+
+  const btn = document.getElementById("analyze");
+  btn.disabled = true;
+  setStatus("Chargement de l'historique météo (peut prendre quelques secondes la première fois)…");
+  document.getElementById("results").hidden = true;
+  destroyCharts();
+
+  try {
+    const daily = await loadArchive(place, sinceYear);
+    if (!daily || !daily.time || daily.time.length < 365 * 3) {
+      throw new Error("Historique trop court pour ce lieu — essayez une année de départ plus récente.");
+    }
+
+    setStatus(`Analyse de ${daily.time.length} jours de données (${daily.time[0]} → ${daily.time[daily.time.length - 1]})…`);
+
+    const period = periodAnalysis(daily, refDate);
+    const annual = annualAnalysis(daily);
+    const monthly = monthlyAnalysis(daily);
+    const events = notableEvents(daily);
+    const records = annualRecords(annual);
+
+    document.getElementById("place-title").textContent = label;
+    renderNarrative(daily, place, refDate, period, annual, +sinceYear);
+    renderCards(place, refDate, period);
+    renderPeriodChart(period);
+    renderMonthlyChart(monthly);
+    renderAnnualChart(annual);
+    renderEvents(daily, events, records);
+
+    if (typeof Chart === "undefined") {
+      setStatus("Les bibliothèques de graphiques (CDN) n'ont pas pu être chargées — vérifiez votre connexion.", true);
+      document.getElementById("results").hidden = false;
+      return;
+    }
+
+    document.getElementById("results").hidden = false;
+    setStatus(`Analyse terminée — données ${daily.time[0]} → ${daily.time[daily.time.length - 1]}.`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Échec de l'analyse : ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("analyze").addEventListener("click", analyze);
+
+(function init() {
+  const d = new Date();
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  document.getElementById("ref-date").value = iso;
+})();

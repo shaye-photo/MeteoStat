@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClimaStat — Analyse météo historique</title>
+  <meta name="description" content="Analyse des statistiques météo et climatiques d'un lieu : moyennes saisonnières, tendances sur 5 ans, événements marquants." />
+  <link rel="stylesheet" href="style.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>🌤️ ClimaStat</h1>
+    <p>Analyse du climat d'un lieu : « à cette période de l'année, en moyenne, le temps est…, la tendance sur 5 ans est…, les événements marquants sont… »</p>
+  </header>
+
+  <main>
+    <section class="controls" aria-label="Recherche">
+      <div class="search-wrap">
+        <label for="search">Lieu</label>
+        <input id="search" type="text" placeholder="Ex. : Paris, Lyon, Montréal…" autocomplete="off" />
+        <ul id="suggestions" class="suggestions" hidden></ul>
+      </div>
+      <div class="field">
+        <label for="ref-date">Date de référence</label>
+        <input id="ref-date" type="date" />
+      </div>
+      <div class="field">
+        <label for="since">Historique depuis</label>
+        <select id="since">
+          <option value="1950" selected>1950</option>
+          <option value="1970">1970</option>
+          <option value="1990">1990</option>
+          <option value="2010">2010</option>
+        </select>
+      </div>
+      <button id="analyze" class="btn-primary" type="button">Analyser</button>
+    </section>
+
+    <div id="status" class="status" role="status" hidden></div>
+
+    <section id="results" hidden>
+      <h2 id="place-title"></h2>
+
+      <div class="narrative card" id="narrative"></div>
+
+      <div class="cards" id="cards"></div>
+
+      <section class="chart-block card">
+        <h3>Évolution pour cette période de l'année</h3>
+        <p class="hint">Températures moyennes (jour / nuit) autour de la date choisie, par année.</p>
+        <canvas id="chart-period" height="120"></canvas>
+      </section>
+
+      <section class="chart-block card">
+        <h3>Cycle annuel</h3>
+        <p class="hint">Moyennes mensuelles de température et de précipitations sur tout l'historique.</p>
+        <canvas id="chart-monthly" height="120"></canvas>
+      </section>
+
+      <section class="chart-block card">
+        <h3>Température moyenne annuelle</h3>
+        <p class="hint">Tendance climatique globale (régression linéaire sur tout l'historique).</p>
+        <canvas id="chart-annual" height="120"></canvas>
+      </section>
+
+      <section class="card" id="events-block">
+        <h3>Événements climatiques marquants</h3>
+        <div id="events"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer>
+    Données : <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+    (archives ERA5 / ERA5-Land, <a href="https://open-meteo.com/en/docs/historical-weather-api" target="_blank" rel="noopener">API historique</a>).
+    Application sans clé d'API, 100 % côté navigateur.
+  </footer>
+</body>
+</html>
