@@ -68,5 +68,8 @@ pour les intégrer côté navigateur. L'app contourne cette limite en utilisant 
   la date de fin est donc automatiquement ramenée à J−7 (J−8 pour NASA POWER).
 - Le modèle de prévision ARPEGE n'assure qu'environ 4 à 5 jours de prévi fiable ; les jours
   supplémentaires éventuels sont ignorés.
+- En cas de dépassement du quota horaire Open-Meteo (« Hourly API request limit exceeded »),
+  l'app affiche un message explicatif ; l'historique de chaque lieu analysé est mis en cache
+  dans `localStorage` pendant 24 h pour éviter tout re-téléchargement.
 - Seuil « jour de pluie » : précipitations ≥ 1 mm/jour (constante `RAINY_MM` dans `app.js`).
 - Seuils heatwave / gel : 30 °C et 0 °C (constantes `HEAT_THRESHOLD_C` / `FROST_THRESHOLD_C`).

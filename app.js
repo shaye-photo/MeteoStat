@@ -213,7 +213,35 @@ document.addEventListener("click", (e) => {
 
 /* ---------- Récupération des données ---------- */
 
+const CACHE_PREFIX = "meteostat-archive-v1:";
+const CACHE_TTL_MS = 24 * 3600 * 1000;
+const CACHE_MAX_BYTES = 4 * 1024 * 1024;
+
+function archiveCacheKey(place, sinceYear) {
+  return `${CACHE_PREFIX}${(+place.latitude).toFixed(3)},${(+place.longitude).toFixed(3)}:${sinceYear}`;
+}
+
+function friendlyApiError(reason) {
+  if (/limit/i.test(reason || "")) {
+    return (
+      "Limite horaire de l'API Open-Meteo atteinte pour votre adresse IP " +
+      "(fréquent sur une connexion mobile partagée). " +
+      "Réessayez dans une heure, ou réduisez l'historique (1990/2010). " +
+      "Les lieux déjà analysés restent en cache local 24 h."
+    );
+  }
+  return reason || "Erreur de l'API météo";
+}
+
+
 async function loadArchive(place, sinceYear) {
+  const cacheKey = archiveCacheKey(place, sinceYear);
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
+    if (cached && Date.now() - cached.t < CACHE_TTL_MS && cached.daily && cached.daily.time) {
+      return cached.daily;
+    }
+  } catch {}
   const today = new Date();
   const end = new Date(today);
   end.setDate(end.getDate() - 7); /* l'archive ERA5 a ~5 jours de délai */
@@ -228,7 +256,11 @@ async function loadArchive(place, sinceYear) {
   });
   const res = await fetch(`${ARCHIVE_URL}?${params}`);
   const data = await res.json();
-  if (data.error) throw new Error(data.reason || "Erreur de l'API météo");
+  if (data.error) throw new Error(friendlyApiError(data.reason));
+  try {
+    const payload = JSON.stringify({ t: Date.now(), daily: data.daily });
+    if (payload.length <= CACHE_MAX_BYTES) localStorage.setItem(cacheKey, payload);
+  } catch {}
   return data.daily;
 }
 
