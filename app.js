@@ -4,6 +4,10 @@
 
 const GEO_URL = "https://geocoding-api.open-meteo.com/v1/search";
 const ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
+const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
+const POWER_URL = "https://power.larc.nasa.gov/api/temporal/daily";
+const POWER_MISSING = -999;
+const ARPEGE_MODELS_FR = ["meteofrance_arpege_france", "meteofrance_arpege_world"];
 
 const DAILY_VARS = [
   "weather_code",
@@ -228,6 +232,93 @@ async function loadArchive(place, sinceYear) {
   return data.daily;
 }
 
+async function loadPowerDaily(place, sinceYear) {
+  const today = new Date();
+  const end = new Date(today);
+  end.setDate(end.getDate() - 8);
+  const powerStart = Math.max(1981, sinceYear);
+  const params = new URLSearchParams({
+    parameters: "T2M_MAX,T2M_MIN,PRECTOTCORR",
+    community: "RE",
+    latitude: place.latitude,
+    longitude: place.longitude,
+    start: `${powerStart}0101`,
+    end: end.toISOString().slice(0, 10).replace(/-/g, ""),
+    format: "JSON",
+    "time-standard": "LST",
+  });
+  const res = await fetch(`${POWER_URL}?${params}`);
+  if (!res.ok) throw new Error(`NASA POWER indisponible (HTTP ${res.status})`);
+  const data = await res.json();
+  const p = data && data.properties && data.properties.parameter;
+  if (!p) throw new Error("Réponse NASA POWER inattendue");
+  const param = (names) => {
+    for (const n of names) if (p[n]) return p[n];
+    return null;
+  };
+  const tmax = param(["T2M_MAX"]);
+  const tmin = param(["T2M_MIN"]);
+  const rain = param(["PRECTOTCORR", "PRECTOT"]);
+  if (!tmax || !tmin || !rain) throw new Error("Paramètres NASA POWER manquants");
+  const clean = (series) => {
+    const out = {};
+    Object.entries(series).forEach(([k, v]) => {
+      const num = +v;
+      if (v !== null && num !== POWER_MISSING && !Number.isNaN(num)) out[k] = num;
+    });
+    return out;
+  };
+  const tmaxC = clean(tmax);
+  const tminC = clean(tmin);
+  const rainC = clean(rain);
+  const times = [...new Set([...Object.keys(tmaxC), ...Object.keys(tminC)])].sort();
+  const daily = { time: [], temperature_2m_max: [], temperature_2m_min: [], precipitation_sum: [] };
+  times.forEach((k) => {
+    daily.time.push(`${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`);
+    daily.temperature_2m_max.push(tmaxC[k] ?? null);
+    daily.temperature_2m_min.push(tminC[k] ?? null);
+    daily.precipitation_sum.push(rainC[k] ?? null);
+  });
+  return daily;
+}
+
+async function loadForecast(place, forecastDays) {
+  let lastError = null;
+  for (const model of ARPEGE_MODELS_FR) {
+    try {
+      const params = new URLSearchParams({
+        latitude: place.latitude,
+        longitude: place.longitude,
+        daily: "temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code",
+        timezone: "auto",
+        forecast_days: String(forecastDays),
+        models: model,
+      });
+      const res = await fetch(`${FORECAST_URL}?${params}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.reason || "API prévisions indisponible");
+      const d = data.daily;
+      const pick = (base) => d[base] || d[`${base}_${model}`] || null;
+      const tmax = pick("temperature_2m_max");
+      const tmin = pick("temperature_2m_min");
+      if (!tmax || !tmin || !tmax.some((v) => v !== null)) {
+        throw new Error("Aucune donnée ARPEGE pour ce lieu");
+      }
+      return {
+        model,
+        time: d.time || [],
+        tmax,
+        tmin,
+        rain: pick("precipitation_sum") || [],
+        codes: pick("weather_code") || [],
+      };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Prévisions indisponibles");
+}
+
 /* ---------- Analyses ---------- */
 
 function periodAnalysis(d, refDateStr) {
@@ -246,8 +337,8 @@ function periodAnalysis(d, refDateStr) {
     y.tmax.push(d.temperature_2m_max[i]);
     y.tmin.push(d.temperature_2m_min[i]);
     y.rain.push(d.precipitation_sum[i]);
-    const code = d.weather_code[i];
-    y.codes[code] = (y.codes[code] || 0) + 1;
+    const code = d.weather_code?.[i];
+    if (code !== undefined) y.codes[code] = (y.codes[code] || 0) + 1;
   });
 
   const years = [...perYear.keys()].sort((a, b) => a - b);
@@ -266,9 +357,9 @@ function periodAnalysis(d, refDateStr) {
   const catCount = {};
   idx.forEach((i) => {
     let cat;
-    if ((d.snowfall_sum[i] || 0) > 0) cat = "Neige";
+    if ((d.snowfall_sum?.[i] || 0) > 0) cat = "Neige";
     else {
-      const w = WMO[d.weather_code[i]];
+      const w = WMO[d.weather_code?.[i]];
       cat = w ? w.cat : "Autre";
     }
     catCount[cat] = (catCount[cat] || 0) + 1;
@@ -359,7 +450,7 @@ function annualRecords(annual) {
 
 /* ---------- Rendu ---------- */
 
-function renderNarrative(d, place, refDate, period, annual, sinceYear) {
+function renderNarrative(d, place, refDate, period, annual, sinceYear, powerPeriod, forecast) {
   const yearSpan = `${sinceYear}–${annual[annual.length - 1]?.year ?? ""}`;
   const items = [];
 
@@ -410,6 +501,35 @@ function renderNarrative(d, place, refDate, period, annual, sinceYear) {
     `<strong class="cold">${fmt(d.temperature_2m_min[period.coldest])} °C</strong> ` +
     `le ${frenchDate(d.time[period.coldest])} (record de froid).`);
 
+  if (powerPeriod) {
+    const pYears = powerPeriod.yearlyStats.map((s) => s.year);
+    const pLast5 = powerPeriod.yearlyStats.slice(-5).map((s) => s.mean).filter((v) => v !== null);
+    const pSlope = slopePerYear(pLast5);
+    if (pYears.length >= 5 && period.tmax !== null) {
+      const dMax = powerPeriod.tmax - period.tmax;
+      const dMin = powerPeriod.tmin - period.tmin;
+      const agree = pSlope !== null && slopeLast5 !== null
+        && Math.sign(pSlope) === Math.sign(slopeLast5);
+      items.push(
+        `Croisement avec la source indépendante <strong>NASA POWER</strong> (données à partir de ${pYears[0]}) : ` +
+        `sur la même fenêtre, ${fmt(powerPeriod.tmax)} °C le jour / ${fmt(powerPeriod.tmin)} °C la nuit ` +
+        `(écarts ${dMax >= 0 ? "+" : ""}${fmt(dMax)} °C / ${dMin >= 0 ? "+" : ""}${fmt(dMin)} °C), ` +
+        `tendance 5 ans ${trendWord(pSlope)} — les deux sources sont ` +
+        `<strong>${agree ? "concordantes" : "divergentes"}</strong>.`);
+    }
+  }
+
+  if (forecast) {
+    const fDays = forecast.tmax.filter((v) => v !== null).length;
+    const fTmax = mean(forecast.tmax);
+    const fTmin = mean(forecast.tmin);
+    const fRain = forecast.rain.filter((v) => v !== null && v >= RAINY_MM).length;
+    items.push(
+      `Prochains jours (<strong>modèle ARPEGE de Météo-France</strong>, ${fDays} jours) : ` +
+      `maximum moyen ${fmt(fTmax)} °C, minimum moyen ${fmt(fTmin)} °C, ` +
+      `dont <strong>${fRain} jour${fRain > 1 ? "s" : ""} de pluie</strong> (≥ ${RAINY_MM} mm).`);
+  }
+
   const el = document.getElementById("narrative");
   el.innerHTML = `<h3>📌 En résumé</h3><ul>${items.map((t) => `<li>${t}</li>`).join("")}</ul>`;
 }
@@ -428,7 +548,7 @@ function renderCards(place, refDate, period) {
     .join("");
 }
 
-function renderPeriodChart(period) {
+function renderPeriodChart(period, powerPeriod) {
   const ys = period.yearlyStats;
   const years = ys.map((s) => s.year);
   const tmax = ys.map((s) => s.tmax);
@@ -436,15 +556,25 @@ function renderPeriodChart(period) {
   const n5 = Math.min(5, ys.length);
   const trendAll = linregSeries(tmax.map((v, i) => (v + tmin[i]) / 2));
 
+  const powerByYear = new Map((powerPeriod ? powerPeriod.yearlyStats : [])
+    .filter((s) => s.tmax !== null)
+    .map((s) => [s.year, s]));
+  const pMax = powerByYear.size ? years.map((y) => (powerByYear.get(y) || {}).tmax ?? null) : [];
+  const pMin = powerByYear.size ? years.map((y) => (powerByYear.get(y) || {}).tmin ?? null) : [];
+
   charts.push(new Chart(document.getElementById("chart-period"), {
     type: "line",
     data: {
       labels: years,
       datasets: [
-        { label: "Max moy. (journée) °C", data: tmax, borderColor: "#d9534f", backgroundColor: "#d9534f22", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
-        { label: "Min moy. (nuit) °C", data: tmin, borderColor: "#3a7bd5", backgroundColor: "#3a7bd522", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
+        { label: "Max moy. (journée) °C — ERA5", data: tmax, borderColor: "#d9534f", backgroundColor: "#d9534f22", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
+        { label: "Min moy. (nuit) °C — ERA5", data: tmin, borderColor: "#3a7bd5", backgroundColor: "#3a7bd522", tension: .3, pointRadius: years.length > 60 ? 0 : 2 },
         { label: "Tendance globale (moyenne)", data: trendAll, borderColor: "#5b6b7b", borderDash: [6, 4], pointRadius: 0, tension: 0 },
         { label: "5 dernières années", data: years.map((y, i) => (i >= years.length - n5 ? tmax[i] : null)), borderColor: "#e8a13a", backgroundColor: "#e8a13a", pointRadius: 4, showLine: false },
+        ...(powerByYear.size ? [
+          { label: "NASA POWER max", data: pMax, borderColor: "#d9534f", borderDash: [2, 3], pointRadius: 0, tension: .3 },
+          { label: "NASA POWER min", data: pMin, borderColor: "#3a7bd5", borderDash: [2, 3], pointRadius: 0, tension: .3 },
+        ] : []),
       ],
     },
     options: {
@@ -453,6 +583,24 @@ function renderPeriodChart(period) {
         y: { title: { display: true, text: "°C" } },
         x: { ticks: { maxTicksLimit: 12 } },
       },
+    },
+  }));
+}
+
+function renderForecastChart(forecast) {
+  const labels = forecast.time.map((t) => t.slice(8, 10) + "/" + t.slice(5, 7));
+  charts.push(new Chart(document.getElementById("chart-forecast"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { type: "line", label: "Max °C (journée)", data: forecast.tmax, borderColor: "#d9534f", tension: .3, pointRadius: 3 },
+        { type: "line", label: "Min °C (nuit)", data: forecast.tmin, borderColor: "#3a7bd5", tension: .3, pointRadius: 3 },
+        { type: "bar", label: "Précipitations (mm)", data: forecast.rain, backgroundColor: "#1c9fd655" },
+      ],
+    },
+    options: {
+      scales: { y: { title: { display: false } } },
     },
   }));
 }
@@ -546,6 +694,7 @@ async function analyze() {
   btn.disabled = true;
   setStatus("Chargement de l'historique météo (peut prendre quelques secondes la première fois)…");
   document.getElementById("results").hidden = true;
+  document.getElementById("forecast-block").hidden = true;
   destroyCharts();
 
   try {
@@ -562,19 +711,48 @@ async function analyze() {
     const events = notableEvents(daily);
     const records = annualRecords(annual);
 
+    let powerPeriod = null;
+    let powerError = null;
+    if (document.getElementById("use-power").checked) {
+      setStatus("Croisement avec la source indépendante NASA POWER…");
+      try {
+        const powerDaily = await loadPowerDaily(place, +sinceYear);
+        if (powerDaily.time.length >= 365 * 5) {
+          powerPeriod = periodAnalysis(powerDaily, refDate);
+        } else {
+          powerError = "historique POWER trop court";
+        }
+      } catch (err) {
+        powerError = err.message;
+      }
+    }
+
+    let forecast = null;
+    try {
+      forecast = await loadForecast(place, 6);
+    } catch {
+      forecast = null;
+    }
+
     document.getElementById("place-title").textContent = label;
-    renderNarrative(daily, place, refDate, period, annual, +sinceYear);
+    renderNarrative(daily, place, refDate, period, annual, +sinceYear, powerPeriod, forecast);
+    if (powerError) {
+      document.getElementById("events").insertAdjacentHTML("beforebegin",
+        `<p class="src-note">⚠️ Croisement NASA POWER indisponible (${powerError}).</p>`);
+    }
+    if (forecast) {
+      document.getElementById("forecast-block").hidden = false;
+      renderForecastChart(forecast);
+    }
+    if (typeof Chart === "undefined") {
+      throw new Error("La bibliothèque de graphiques (CDN) n'a pas pu être chargée — vérifiez votre connexion Internet.");
+    }
+
     renderCards(place, refDate, period);
-    renderPeriodChart(period);
+    renderPeriodChart(period, powerPeriod);
     renderMonthlyChart(monthly);
     renderAnnualChart(annual);
     renderEvents(daily, events, records);
-
-    if (typeof Chart === "undefined") {
-      setStatus("Les bibliothèques de graphiques (CDN) n'ont pas pu être chargées — vérifiez votre connexion.", true);
-      document.getElementById("results").hidden = false;
-      return;
-    }
 
     document.getElementById("results").hidden = false;
     setStatus(`Analyse terminée — données ${daily.time[0]} → ${daily.time[daily.time.length - 1]}.`);

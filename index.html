@@ -35,6 +35,10 @@
           <option value="2010">2010</option>
         </select>
       </div>
+      <label class="check">
+        <input type="checkbox" id="use-power" checked="checked" />
+        Comparer NASA POWER
+      </label>
       <button id="analyze" class="btn-primary" type="button">Analyser</button>
     </section>
 
@@ -46,6 +50,12 @@
       <div class="narrative card" id="narrative"></div>
 
       <div class="cards" id="cards"></div>
+
+      <section class="chart-block card" id="forecast-block" hidden>
+        <h3>Prévisions Météo-France (modèle ARPEGE)</h3>
+        <p class="hint">Températures et précipitations des prochains jours, modèle français ARPEGE.</p>
+        <canvas id="chart-forecast" height="110"></canvas>
+      </section>
 
       <section class="chart-block card">
         <h3>Évolution pour cette période de l'année</h3>

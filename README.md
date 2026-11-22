@@ -48,10 +48,25 @@ npx serve .
 | `style.css`  | Mise en page (responsive, sans framework)       |
 | `app.js`     | Géocodage, requêtes API, analyses et graphiques |
 
+## Sources de données
+
+| Source | Rôle dans l'app |
+|--------|-----------------|
+| [Open-Meteo — API historique](https://open-meteo.com/en/docs/historical-weather-api) (réanalyses ERA5 / ERA5-Land) | Grille de référence mondiale, 1950 → J−7 |
+| [Open-Meteo — API prévisions](https://open-meteo.com/en/docs), modèles **ARPEGE / AROME de Météo-France** | Prévisions des prochains jours (données Météo-France sans clé) |
+| [NASA POWER](https://power.larc.nasa.gov/) | Source indépendante (1981 → J−8) pour la comparaison croisée des moyennes et de la tendance 5 ans ; activable via la case « Comparer NASA POWER » |
+
+Concernant les données Météo-France « officielles » (meteo.data.gouv.fr et portail-api.meteofrance.fr) :
+elles sont gratuites (Licence Ouverte / Etalab 2.0) mais n'offrent ni historique profond par API
+(24 h glissantes pour les observations) ni en-têtes CORS fiables — un petit proxy serait nécessaire
+pour les intégrer côté navigateur. L'app contourne cette limite en utilisant ARPEGE/AROME via Open-Meteo.
+
 ## Notes techniques
 
-- Les appels se font directement depuis le navigateur : les API Open-Meteo autorisent le CORS.
+- Les appels se font directement depuis le navigateur : Open-Meteo et NASA POWER autorisent le CORS.
 - Les données d'archive ont environ 5 à 7 jours de délai de publication (réanalyse ERA5) ;
-  la date de fin est donc automatiquement ramenée à J−7.
+  la date de fin est donc automatiquement ramenée à J−7 (J−8 pour NASA POWER).
+- Le modèle de prévision ARPEGE n'assure qu'environ 4 à 5 jours de prévi fiable ; les jours
+  supplémentaires éventuels sont ignorés.
 - Seuil « jour de pluie » : précipitations ≥ 1 mm/jour (constante `RAINY_MM` dans `app.js`).
 - Seuils heatwave / gel : 30 °C et 0 °C (constantes `HEAT_THRESHOLD_C` / `FROST_THRESHOLD_C`).
