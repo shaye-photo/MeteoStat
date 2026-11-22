@@ -1,9 +1,12 @@
 # ClimaStat — Analyse météo historique
 
-Application web **sans backend et sans clé d'API** qui répond en langage clair à des questions du type :
+Application web **sans backend et sans clé d'API** conçue pour préparer ses vacances : on choisit
+un lieu et une **période** (dates début/fin, ou une durée en jours), et l'app répond en langage clair :
 
-> « À cette période de l'année, en moyenne, le temps est… La température en journée / en nuit est…
-> Sur les 5 dernières années la tendance est… Les événements climatiques marquants sont… »
+> « À cette période, le temps est généralement… Les températures moyennes sont de X °C le jour et
+> Y °C la nuit, avec Z % de jours de pluie. Sur les 5 dernières années la tendance est… Les
+> événements climatiques marquants sont… Voici quoi prévoir dans votre valise et quelles activités
+> sont adaptées. »
 
 ## Fonctionnement
 
@@ -11,17 +14,21 @@ Application web **sans backend et sans clé d'API** qui répond en langage clair
 2. **Téléchargement de l'historique** météo journalier (températures max/min/moyenne, précipitations,
    neige, code météo, vent) depuis l'[API historique Open-Meteo](https://open-meteo.com/en/docs/historical-weather-api)
    (réanalyses ERA5 / ERA5-Land, de 1950 à nos jours).
-3. **Analyse et synthèse narrative** : moyennes et temps dominant autour de la date choisie (fenêtre de ±7 jours),
-   tendance sur 5 ans (régression linéaire), tendance climatique globale, records et événements marquants.
-4. **Graphiques** (Chart.js via CDN) :
+3. **Analyse et synthèse narrative sur la période** : moyennes et temps dominant sur le créneau
+   calendaire (renouvelé pour chaque année d'historique), probabilités de conditions (≥ 28 °C, gel,
+   pluie, vent), tendance sur 5 ans (régression linéaire), tendance climatique globale, records.
+4. **Aide vacances** : liste de valise conseillée (et inutile) + activités classées Idéal / Possible /
+   Peu adapté, chacun motivé par les statistiques.
+5. **Graphiques** (Chart.js via CDN) :
    - évolution année par année pour la période de l'année choisie (avec tendance) ;
    - cycle annuel (températures et précipitations moyennes mensuelles) ;
    - température moyenne annuelle + tendance.
 
-Les « événements marquants » incluent : records de chaleur / de froid absolus, jour le plus arrosé,
-vent le plus fort, chute de neige record, plus longue vague de chaleur (≥ 30 °C consécutifs),
-plus longue période de gel, année la plus chaude / la plus froide, ainsi que les records propres
-à la fenêtre de 15 jours autour de la date choisie.
+Le « créneau calendaire » signifie que l'analyse regroupe, sur tout l'historique, tous les jours
+dont la date tombe entre les dates choisies (ex. 3–17 août), y compris si la période chevauche le
+nouvel an. Les « événements marquants » incluent : records de chaleur / de froid absolus, jour le
+plus arrosé, vent le plus fort, chute de neige record, plus longue vague de chaleur (≥ 30 °C
+consécutifs), plus longue période de gel, années extrêmes, ainsi que les records propres au créneau.
 
 ## Lancer l'application
 

@@ -23,8 +23,16 @@
         <ul id="suggestions" class="suggestions" hidden></ul>
       </div>
       <div class="field">
-        <label for="ref-date">Date de référence</label>
-        <input id="ref-date" type="date" />
+        <label for="start-date">Début des vacances</label>
+        <input id="start-date" type="date" />
+      </div>
+      <div class="field">
+        <label for="duration">Durée (jours)</label>
+        <input id="duration" type="number" min="1" max="90" step="1" value="14" />
+      </div>
+      <div class="field">
+        <label for="end-date">Fin</label>
+        <input id="end-date" type="date" />
       </div>
       <div class="field">
         <label for="since">Historique depuis</label>
@@ -50,6 +58,14 @@
       <div class="narrative card" id="narrative"></div>
 
       <div class="cards" id="cards"></div>
+
+      <section class="card advice-block">
+        <h3>🎒 Pour vos vacances</h3>
+        <p class="hint">Probabilités historiques sur ce créneau, conseils de valise et d'activités.</p>
+        <div id="packing"></div>
+        <h4 class="act-heading">🧭 Activités suggérées</h4>
+        <div id="activities"></div>
+      </section>
 
       <section class="chart-block card" id="forecast-block" hidden>
         <h3>Prévisions Météo-France (modèle ARPEGE)</h3>
