@@ -393,6 +393,7 @@ function periodAnalysis(d, startStr, endStr) {
   const n = d.time.length;
   const idx = [];
   for (let i = 0; i < n; i++) if (inWin(dayOfYear(d.time[i]))) idx.push(i);
+  if (!idx.length) throw new Error("Aucune donnée historique ne correspond à cette période — vérifiez les dates.");
 
   const perYear = new Map();
   idx.forEach((i) => {
@@ -915,7 +916,10 @@ async function analyze() {
     setStatus(`Analyse de ${daily.time.length} jours de données (${daily.time[0]} → ${daily.time[daily.time.length - 1]})…`);
 
     const period2 = { ...period, duration: windowLengthDays(period.start, period.end) };
-    const clima = periodAnalysis(daily, period.start, period.end);
+    const analysis = periodAnalysis(daily, period.start, period.end);
+    analysis.start = period2.start;
+    analysis.end = period2.end;
+    analysis.duration = period2.duration;
     const stats = conditionStats(daily, period.start, period.end);
     const annual = annualAnalysis(daily);
     const monthly = monthlyAnalysis(daily);
@@ -946,8 +950,8 @@ async function analyze() {
     }
 
     document.getElementById("place-title").textContent = label;
-    renderNarrative(daily, place, period2, annual, +sinceYear, powerPeriod, forecast, stats);
-    renderAdvice(stats, period2);
+    renderNarrative(daily, place, analysis, annual, +sinceYear, powerPeriod, forecast, stats);
+    renderAdvice(stats, analysis);
     if (powerError) {
       document.getElementById("events").insertAdjacentHTML("beforebegin",
         `<p class="src-note">⚠️ Croisement NASA POWER indisponible (${powerError}).</p>`);
@@ -960,8 +964,8 @@ async function analyze() {
       throw new Error("La bibliothèque de graphiques (CDN) n'a pas pu être chargée — vérifiez votre connexion Internet.");
     }
 
-    renderCards(place, period2, stats);
-    renderPeriodChart(clima, powerPeriod);
+    renderCards(place, analysis, stats);
+    renderPeriodChart(analysis, powerPeriod);
     renderMonthlyChart(monthly);
     renderAnnualChart(annual);
     renderEvents(daily, events, records);
